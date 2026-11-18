@@ -1,0 +1,39 @@
+# Local datasets and derived arrays
+datasets/
+data/
+*.npy
+*.npz
+*.parquet
+*.h5
+*.hdf5
+*.tfrecord
+*.tfrecords
+
+# Checkpoints, weights, and exported models
+weights/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.pkl
+*.pickle
+*.joblib
+*.keras
+*.tflite
+*.gguf
+pytorch_model*.bin
+tf_model*.h5
+
+# Local caches and archives
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+.venv/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
