@@ -1,0 +1,63 @@
+dataset: emowear
+data_root: /mnt/nvme1n1p1/chentianjiao/emo/datasets/EmoWear/EmoWear_development
+modalities:
+- ppg
+- eda
+ppg_sampling_rate: 64
+eda_sampling_rate: 4
+window_seconds: 30
+window_policy: last30
+num_folds: 5
+val_fraction: 0.2
+model: mae_classifier
+hidden_dim: 40
+depth: 2
+heads: 4
+dropout: 0.3
+seed: 42
+batch_size: 32
+learning_rate: 0.0003
+weight_decay: 0.001
+epochs: 5
+patience: 10
+min_delta: 0.0
+regression_loss: huber
+device: auto
+cpu_threads: 4
+log_every: 5
+ppg_normalization: standard
+eda_normalization: log_robust
+exclude_neutral: false
+preprocess:
+  filter: true
+  ppg_band:
+  - 0.5
+  - 4.0
+  eda_lowpass: 0.8
+  filter_order: 3
+quality:
+  max_missing_fraction: 0.05
+  max_gap_seconds: 0.5
+  flat_epsilon: 1.0e-08
+  flat_fraction: 0.98
+  jump_mad: 50
+  saturation_value: null
+  reject_flags:
+  - negative_conductance
+fold_ids:
+- 0
+pilot: true
+task: coral
+output_dir: "/mnt/nvme1n1p1/chentianjiao/emo/bv0.1_\u5728basline\u57FA\u7840\u4E0A\
+  \u66F4\u6539mae_encoder/experment/real_emowear_fold0_5ep/C"
+experiment_layout: true
+encoder_dim: 64
+encoder_depth: 2
+encoder_heads: 4
+encoder_mlp_ratio: 4
+encoder_dropout: 0.1
+encoder_lr: 0.0001
+head_lr: 0.0003
+freeze_encoder: false
+pretrained_root: "/mnt/nvme1n1p1/chentianjiao/emo/bv0.1_\u5728basline\u57FA\u7840\u4E0A\
+  \u66F4\u6539mae_encoder/experment/real_emowear_fold0_5ep/A"

@@ -32,6 +32,12 @@ bv0.x_版本说明/
 - `weights/` 存放 checkpoint 和导出的模型权重。`results/` 存放指标、预测、图表和训练日志。
 - 每个实验根目录下的 `README.md` 记录实验目的、所属版本、关键改动、数据集与划分、配置与运行命令，以及主要结果。实验重跑时使用新目录，保留已有记录。
 
+## TensorBoard 监控
+
+- 每个项目版本的训练入口必须支持 TensorBoard，并将 `tensorboard` 列入该版本的依赖声明。每次训练默认将每个 epoch 的训练和验证 loss 分别写入 `loss/train` 和 `loss/val`，横轴使用 epoch。
+- TensorBoard 日志保存在各自实验的 `results/tensorboard/` 下。不同折次和随机种子使用独立的子目录，便于对比曲线。
+- 在实验的 `README.md` 中注明日志路径和查看命令，例如在实验目录运行 `tensorboard --logdir results/tensorboard`。
+
 ## GitHub 提交
 
 - 权重、checkpoint、模型导出文件、数据集原始文件和预处理副本、缓存及大型中间产物只保存在本地或项目指定的存储中。禁止直接提交、强制添加或通过 Git LFS 上传到 GitHub。

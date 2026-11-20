@@ -1,4 +1,7 @@
 import argparse
+import hashlib
+from torch.utils.tensorboard import SummaryWriter
+from mae_training import build_stage, reconstruction_epoch, reconstruction_plot
 from importlib.metadata import version
 import platform
 import random
@@ -18,7 +21,6 @@ from loss.tasks import loss_fn
 from metrics import metrics
 from metrics.decoding import decode
 from metrics.reporting import baseline_predictions, plot_history, summarize
-from model import model_from_config
 
 
 def seed_all(seed):
@@ -63,7 +65,14 @@ def run_training(cfg):
         raise ValueError('E4 native rates must remain 64/4 Hz')
     seed_all(cfg['seed'])
     torch.set_num_threads(cfg.get('cpu_threads',4))
-    root=Path(cfg['output_dir'])
+    experiment = Path(cfg['output_dir'])
+    organized = cfg.get('experiment_layout', False)
+    pretraining = cfg.get('model') == 'waveform_mae'
+    if cfg.get('optimizer', 'adamw') != 'adamw' or cfg['epochs'] < 1:
+        raise ValueError('Expected AdamW and at least one epoch')
+    if organized:
+        experiment.mkdir(parents=True, exist_ok=False)
+    root = experiment / 'results' if organized else experiment
     if (root/'run.json').exists():
         raise FileExistsError(f'{root} contains a run; choose a new output_dir to preserve provenance')
     root.mkdir(parents=True,exist_ok=True)
@@ -106,6 +115,15 @@ def run_training(cfg):
                        indices=idx.tolist(),trials=len(meta.iloc[idx][['subject_id','trial_id']].drop_duplicates()),
                        windows=len(idx),labels=distributions(meta.iloc[idx])) for name,idx in [('train',tr),('val',va),('test',te)]}))
     save_json(root/'splits.json',split_records)
+    sources_hash = hashlib.sha256((root/'audit'/'sources.json').read_bytes()).hexdigest()
+    if organized:
+        command = 'pretrain_mae.py' if pretraining else ('finetune_mae.py' if cfg['model']=='mae_classifier' else 'train.py')
+        (experiment/'README.md').write_text(
+            f"# {experiment.name}\n\nbv0.1 · {cfg['model']} · {cfg['task']} · seed {cfg['seed']}\n\n"
+            f"Run from code/: `python {command} --config {root.resolve() / 'config.yaml'} --output-dir NEW_DIRECTORY`\n\n"
+            "See results/config.yaml for preprocessing, architecture and budget, results/splits.json for subject splits. "
+            "Zero-phase filtering precedes masking and can mix neighboring patches.\n\n"
+            "View loss curves with `tensorboard --logdir results/tensorboard`.\n")
     for fold,(tr,va,te) in enumerate(folds):
         if cfg.get('fold_ids') is not None and fold not in cfg['fold_ids']:
             continue
@@ -113,29 +131,58 @@ def run_training(cfg):
         folder=root/f'fold_{fold}';folder.mkdir(exist_ok=True)
         norm=FoldNormalizer(cfg['ppg_normalization'],cfg['eda_normalization']).fit(arrays,tr)
         save_json(folder/'normalizer.json',norm.state_dict())
-        loaders = make_loaders(arrays, meta, (tr, va, te), norm, cfg['batch_size'], cfg['seed'] + fold)
-        model=model_from_config(cfg).to(device)
-        opt=torch.optim.AdamW(model.parameters(),lr=cfg['learning_rate'],weight_decay=cfg['weight_decay'])
-        best=float('inf');bad=0;history=[];begin=time.perf_counter()
-        if device.type=='cuda':
-            torch.cuda.reset_peak_memory_stats(device)
-        for epoch in range(cfg['epochs']):
-            t=time.perf_counter()
-            train_loss=epoch_pass(model,loaders[0],device,cfg['task'],opt,cfg['regression_loss'])
-            val_loss=epoch_pass(model,loaders[1],device,cfg['task'],regression_loss=cfg['regression_loss'])
-            history.append(dict(epoch=epoch+1,train_loss=train_loss,val_loss=val_loss,seconds=time.perf_counter()-t))
-            if val_loss<best-cfg.get('min_delta',0.):
-                best=val_loss;bad=0
-                torch.save(dict(model=model.state_dict(),config=cfg,normalizer=norm.state_dict(),fold_id=fold,
-                                epoch=epoch+1,val_loss=val_loss,git_commit=sha,synthetic=audit['synthetic']),folder/'best.pt')
-            else:
-                bad+=1
-            if (epoch+1)%cfg.get('log_every',5)==0 or epoch==0:
-                print(f"fold={fold} epoch={epoch+1} train={train_loss:.5f} val={val_loss:.5f}",flush=True)
-            if bad>=cfg['patience']:
-                break
-        checkpoint=torch.load(folder/'best.pt',map_location=device,weights_only=False)
+        split_indices = (tr, va) if pretraining else (tr, va, te)
+        loaders = make_loaders(arrays, meta, split_indices, norm, cfg['batch_size'], cfg['seed'] + fold)
+        identity = dict(split=split_records[fold], sources=sources_hash, normalizer=norm.state_dict(),
+                        preprocessing={key: cfg[key] for key in ('window_policy', 'window_seconds', 'preprocess', 'quality')})
+        model, opt = build_stage(cfg, fold, identity, device)
+        weights = experiment / 'weights' / folder.name if organized else folder
+        weights.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = weights / ('best_mae.pt' if pretraining else 'best.pt')
+        log_dir = experiment / 'results' / 'tensorboard' / folder.name / f"seed_{cfg['seed']}"
+        with SummaryWriter(str(log_dir)) as writer:
+            best=float('inf');bad=0;history=[];begin=time.perf_counter()
+            if device.type=='cuda':
+                torch.cuda.reset_peak_memory_stats(device)
+            for epoch in range(cfg['epochs']):
+                t=time.perf_counter()
+                details = {}
+                if pretraining:
+                    training = reconstruction_epoch(model, loaders[0], device, cfg, opt)
+                    generator = torch.Generator(device=device).manual_seed(cfg['seed'] + fold)
+                    validation = reconstruction_epoch(model, loaders[1], device, cfg, generator=generator)
+                    train_loss, val_loss = training.pop('loss'), validation.pop('loss')
+                    for phase, values in [('train', training), ('val', validation)]:
+                        for key, value in values.items():
+                            details[f'{phase}_{key}'] = value
+                            writer.add_scalar(f'{key}/{phase}', value, epoch + 1)
+                else:
+                    train_loss=epoch_pass(model,loaders[0],device,cfg['task'],opt,cfg['regression_loss'])
+                    val_loss=epoch_pass(model,loaders[1],device,cfg['task'],regression_loss=cfg['regression_loss'])
+                writer.add_scalar('loss/train', train_loss, epoch + 1)
+                writer.add_scalar('loss/val', val_loss, epoch + 1)
+                writer.flush()
+                history.append(dict(epoch=epoch+1,train_loss=train_loss,val_loss=val_loss,seconds=time.perf_counter()-t, **details))
+                if val_loss<best-cfg.get('min_delta',0.):
+                    best=val_loss;bad=0
+                    torch.save(dict(model=model.state_dict(),config=cfg,normalizer=norm.state_dict(),fold_id=fold,
+                                    epoch=epoch+1,val_loss=val_loss,git_commit=sha,synthetic=audit['synthetic'], identity=identity,
+                                    **({'encoder': model.encoder.state_dict()} if pretraining else {})), checkpoint_path)
+                else:
+                    bad+=1
+                if (epoch+1)%cfg.get('log_every',5)==0 or epoch==0:
+                    print(f"fold={fold} epoch={epoch+1} train={train_loss:.5f} val={val_loss:.5f}",flush=True)
+                if bad>=cfg['patience']:
+                    break
+        checkpoint=torch.load(checkpoint_path,map_location=device,weights_only=False)
         model.load_state_dict(checkpoint['model'])
+        h=pd.DataFrame(history);h.to_csv(folder/'history.csv',index=False);plot_history(h,folder/'loss.png')
+        if organized:
+            with (experiment/'README.md').open('a') as report:
+                report.write(f"\nFold {fold}: best epoch {checkpoint['epoch']}, validation loss {best:.5f}.\n")
+        if pretraining:
+            reconstruction_plot(model, loaders[1], device, cfg['seed'] + fold, folder/'reconstruction.png')
+            continue
         frame=predict(model,loaders[2],device,cfg['task'],meta.iloc[te])
         frame['fold_id']=fold;frame.to_csv(folder/'predictions.csv',index=False)
         base=baseline_predictions(meta.iloc[tr],meta.iloc[te],cfg['task'])
@@ -144,9 +191,9 @@ def run_training(cfg):
         save_json(folder/'performance.json',dict(seconds=time.perf_counter()-begin,
                   parameters=sum(p.numel() for p in model.parameters()),best_epoch=checkpoint['epoch'],
                   peak_cuda_bytes=torch.cuda.max_memory_allocated(device) if device.type=='cuda' else 0))
-        h=pd.DataFrame(history);h.to_csv(folder/'history.csv',index=False);plot_history(h,folder/'loss.png')
         print(f'fold={fold} saved test predictions ({len(frame)} windows)',flush=True)
-    summarize(root,cfg['task'],cfg['num_folds'])
+    if not pretraining:
+        summarize(root,cfg['task'],cfg['num_folds'])
     return root
 
 
@@ -156,6 +203,7 @@ def load_config_args():
     parser.add_argument('--data-root')
     parser.add_argument('--output-dir')
     parser.add_argument('--set',action='append',default=[],metavar='KEY=YAML_VALUE')
+    parser.add_argument('--pretrained-root')
     a=parser.parse_args()
     cfg=yaml.safe_load(Path(a.config).read_text())
     for item in a.set:
@@ -167,6 +215,8 @@ def load_config_args():
         cfg['data_root']=a.data_root
     if a.output_dir:
         cfg['output_dir']=a.output_dir
+    if a.pretrained_root:
+        cfg['pretrained_root'] = a.pretrained_root
     return cfg
 
 if __name__=='__main__':
