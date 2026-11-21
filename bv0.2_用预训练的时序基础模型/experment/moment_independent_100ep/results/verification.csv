@@ -1,0 +1,5 @@
+run,original_epochs,epochs,best_epoch,max_overlap_loss_delta,seconds
+tune_0.3_full_eda,30,100,96,0.0,77.3583198916167
+tune_0.3_full_ppg,30,100,100,0.0,177.9585071876645
+tune_0.6_full_eda,19,100,86,0.0,77.04861611872911
+tune_0.6_full_ppg,30,100,92,0.0,180.29186054319143

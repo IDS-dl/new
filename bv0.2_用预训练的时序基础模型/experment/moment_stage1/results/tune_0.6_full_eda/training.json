@@ -1,0 +1,7 @@
+{
+  "epochs": 19,
+  "best_epoch": 12,
+  "best_val": 7.202730873694619e-05,
+  "seconds": 15.40655992552638,
+  "peak_cuda_bytes": 937943552
+}

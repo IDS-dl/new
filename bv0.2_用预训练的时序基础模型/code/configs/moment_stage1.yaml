@@ -1,0 +1,35 @@
+data_root: ../../datasets/EmoWear/EmoWear_development
+window_seconds: 30
+window_policy: last30
+ppg_normalization: standard
+eda_normalization: log_robust
+exclude_neutral: false
+num_folds: 5
+val_fraction: 0.2
+fold: 0
+seed: 42
+batch_size: 16
+cpu_threads: 8
+device: auto
+cpu_bfloat16: false
+head_lr: 0.0001
+backbone_lr: 0.00001
+weight_decay: 0.01
+gradient_clip: 1.0
+full_epochs: 30
+full_patience: 7
+head_epochs: 20
+head_patience: 5
+preprocess:
+  filter: true
+  ppg_band: [0.5, 4.0]
+  eda_lowpass: 0.8
+  filter_order: 3
+quality:
+  max_missing_fraction: 0.05
+  max_gap_seconds: 0.5
+  flat_epsilon: 1.0e-08
+  flat_fraction: 0.98
+  jump_mad: 50
+  saturation_value: null
+  reject_flags: [negative_conductance]
